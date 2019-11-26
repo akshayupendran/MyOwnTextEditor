@@ -1,3 +1,7 @@
+/************************
+*        HEADERS        *
+************************/
+#include <errno.h>   // for errorno and eagain
 #include <unistd.h>  // for read
 #include <stdlib.h>  // for atexit
 #include <termios.h> // for tcget/setatribs and termios struct
@@ -5,22 +9,45 @@
 #include <string.h>  // for memcpy
 #include <ctype.h>   // for iscntrl
 
+/************************
+*           BSS         *
+************************/
 // A File Global Structure to remember the beginning Terminal Options
-static struct termios orig;
+static struct termios orig_termios;
+
+/***********
+*  DEFINES *
+***********/
+#define CTRL_KEY(k) ((k) & 0x1f)
+
+/**************************
+* FUNCTION DECLATARATIONS *
+**************************/
+void die(const char *s);
+void disableRawMode();
+void enableRawMode();
+
+/*****************
+* TERMINAL METHODS *
+*****************/
+void die(const char *s)
+{
+  perror(s);
+  exit(1);
+}
 
 void disableRawMode()
 {
-  tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1)
+    die("tcsetattr");
 }
 
 void enableRawMode()
 {
-  struct termios raw;
-  tcgetattr(STDIN_FILENO, &orig);
+  if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) die("tcgetattr");
   atexit(disableRawMode);
 
-  (void)memcpy(&raw, &orig, sizeof(struct termios));
-
+  struct termios raw = orig_termios;
   // Disable OPOST -> output conversion of \n to \r\n
   raw.c_oflag &= ~(OPOST);
   // Disable IXON -> Software_flow_control -> Ctrl-S, Ctrl-Q
@@ -33,23 +60,49 @@ void enableRawMode()
   // DISABLE IEXTEN for Ctrl-V
   raw.c_lflag &= ~(ECHO | ICANON | ISIG | IEXTEN);
   raw.c_cflag |= (CS8);
-  tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+  raw.c_cc[VMIN] = 0;
+  // Warning in Bash for windows VTIME Does not work
+  raw.c_cc[VTIME] = 1; //1/10 of a second / 100ms
+
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
+char editorReadKey()
+{
+  int nread;
+  char c;
+  while ((nread = read(STDIN_FILENO, &c, 1)) != 1)
+  {
+    if (nread == -1 && errno != EAGAIN) die("read");
+  }
+  return c;
+}
+/*** output ***/
+void editorRefreshScreen()
+{
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+}
+
+/*** input ***/
+void editorProcessKeypress()
+{
+  char c = editorReadKey();
+  switch (c)
+  {
+    case CTRL_KEY('q'):
+      exit(0);
+      break;
+  }
+}
+
+/*** init ***/
 int main()
 {
   enableRawMode();
-  char c;
-  while((1 == read(STDIN_FILENO, &c, 1)) &&(c != 'q'))
+  while(1)
   {
-    if (iscntrl(c))
-    {
-      printf("%d\r\n", c);
-    }
-    else
-    {
-      printf("%d ('%c')\r\n", c, c);
-    }
+    editorRefreshScreen();
+    editorProcessKeypress();
   }
   return 0;
 }
